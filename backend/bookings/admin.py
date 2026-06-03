@@ -1,0 +1,20 @@
+from django.contrib import admin
+
+from .models import Booking
+
+
+@admin.register(Booking)
+class BookingAdmin(admin.ModelAdmin):
+	list_display = (
+		"id",
+		"court",
+		"member",
+		"start_time",
+		"end_time",
+		"players_count",
+		"fee_amount",
+		"is_paid",
+		"status",
+	)
+	list_filter = ("status", "is_paid", "court")
+	search_fields = ("member__first_name", "member__last_name", "court__name")
