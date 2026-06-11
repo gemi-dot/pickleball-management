@@ -1,6 +1,7 @@
 import { request, requestWithoutBody } from "@/lib/api/http";
 import type {
   ApiListResponse,
+  BookingAvailabilityResponse,
   Booking,
   CreateBookingInput,
   EntityId,
@@ -15,6 +16,12 @@ type BookingListQuery = ListQuery & {
   member?: EntityId;
   start_time_after?: string;
   end_time_before?: string;
+};
+
+type BookingAvailabilityQuery = {
+  date: string;
+  duration_hours: number;
+  players_count?: number;
 };
 
 export async function listBookings(query: BookingListQuery = {}): Promise<ApiListResponse<Booking>> {
@@ -42,5 +49,14 @@ export async function updateBooking(bookingId: EntityId, payload: UpdateBookingI
 export async function deleteBooking(bookingId: EntityId): Promise<void> {
   return requestWithoutBody(`${BOOKINGS_ENDPOINT}${bookingId}/`, {
     method: "DELETE",
+  });
+}
+
+export async function getBookingAvailability(
+  query: BookingAvailabilityQuery
+): Promise<BookingAvailabilityResponse> {
+  return request<BookingAvailabilityResponse>(`${BOOKINGS_ENDPOINT}availability/`, {
+    method: "GET",
+    query,
   });
 }

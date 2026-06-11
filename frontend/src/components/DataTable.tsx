@@ -13,6 +13,8 @@ interface DataTableProps<T> {
   onDelete?: (row: T) => void;
   loading?: boolean;
   actionColumnWidth?: string;
+  rowClassName?: (row: T) => string;
+  leadingCellClassName?: (row: T) => string;
 }
 
 export function DataTable<T extends { id?: number | string }>({
@@ -22,6 +24,8 @@ export function DataTable<T extends { id?: number | string }>({
   onDelete,
   loading,
   actionColumnWidth = "150px",
+  rowClassName,
+  leadingCellClassName,
 }: DataTableProps<T>) {
   if (loading) {
     return (
@@ -69,12 +73,18 @@ export function DataTable<T extends { id?: number | string }>({
           {data.map((row, idx) => (
             <tr
               key={row.id || idx}
-              className="border-b border-line hover:bg-card-hover transition-colors"
+              className={`border-b border-line transition-colors hover:bg-card-hover ${
+                rowClassName ? rowClassName(row) : ""
+              }`}
             >
-              {columns.map((column) => (
+              {columns.map((column, colIdx) => (
                 <td
                   key={String(column.key)}
-                  className="px-6 py-4 text-sm text-foreground"
+                  className={`px-6 py-4 text-sm text-foreground ${
+                    colIdx === 0 && leadingCellClassName
+                      ? leadingCellClassName(row)
+                      : ""
+                  }`}
                 >
                   {column.render
                     ? column.render(row[column.key], row)

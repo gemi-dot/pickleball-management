@@ -1,8 +1,9 @@
 from django.db import models
-from django.db.models.signals import post_save
+from django.db.models.signals import post_delete, post_save
 from django.dispatch import receiver
 from django.core.exceptions import ValidationError
 from django.utils import timezone
+from decimal import Decimal
 
 
 class Booking(models.Model):
@@ -74,6 +75,63 @@ class Booking(models.Model):
 	def __str__(self) -> str:
 		return f"Booking #{self.pk}"
 
+	def compute_total_paid_amount(self) -> Decimal:
+		total_paid = Decimal("0.00")
+		for payment in self.payments.all():
+			if payment.status in (Payment.STATUS_PAID, Payment.STATUS_PARTIAL):
+				total_paid += payment.amount
+			elif payment.status == Payment.STATUS_REFUNDED:
+				total_paid -= payment.amount
+
+		return max(total_paid, Decimal("0.00"))
+
+	def compute_balance_due(self) -> Decimal:
+		balance = (self.fee_amount or Decimal("0.00")) - self.compute_total_paid_amount()
+		return max(balance, Decimal("0.00"))
+
+	def compute_payment_progress_status(self) -> str:
+		payments = list(self.payments.all())
+		if not payments:
+			return Payment.STATUS_UNPAID
+
+		statuses = {payment.status for payment in payments}
+		if statuses and statuses.issubset({Payment.STATUS_VOID}):
+			return Payment.STATUS_VOID
+		if statuses and statuses.issubset({Payment.STATUS_REFUNDED}):
+			return Payment.STATUS_REFUNDED
+
+		fee_amount = self.fee_amount or Decimal("0.00")
+		total_paid = self.compute_total_paid_amount()
+
+		if fee_amount <= Decimal("0.00"):
+			return Payment.STATUS_PAID
+
+		has_paid_signal = any(
+			payment.status in (Payment.STATUS_PAID, Payment.STATUS_PARTIAL)
+			for payment in payments
+		)
+		has_refund = any(payment.status == Payment.STATUS_REFUNDED for payment in payments)
+
+		if has_paid_signal:
+			if total_paid <= Decimal("0.00") and has_refund:
+				return Payment.STATUS_REFUNDED
+			if total_paid <= Decimal("0.00"):
+				return Payment.STATUS_UNPAID
+			if total_paid < fee_amount:
+				return Payment.STATUS_PARTIAL
+			return Payment.STATUS_PAID
+
+		if has_refund and Payment.STATUS_UNPAID not in statuses:
+			return Payment.STATUS_REFUNDED
+
+		if Payment.STATUS_UNPAID in statuses:
+			return Payment.STATUS_UNPAID
+
+		if Payment.STATUS_VOID in statuses:
+			return Payment.STATUS_VOID
+
+		return Payment.STATUS_UNPAID
+
 	@classmethod
 	def get_next_waitlist_booking(cls, court_id: int, start_time, end_time):
 		"""
@@ -103,6 +161,82 @@ class Booking(models.Model):
 			next_booking.save(update_fields=["status", "updated_at"])
 
 
+class Payment(models.Model):
+	METHOD_CASH = "cash"
+	METHOD_BANK_TRANSFER = "bank_transfer"
+	METHOD_EWALLET = "ewallet"
+	METHOD_CARD = "card"
+	METHOD_CHOICES = [
+		(METHOD_CASH, "Cash"),
+		(METHOD_BANK_TRANSFER, "Bank Transfer"),
+		(METHOD_EWALLET, "E-Wallet"),
+		(METHOD_CARD, "Card"),
+	]
+
+	STATUS_UNPAID = "unpaid"
+	STATUS_PARTIAL = "partial"
+	STATUS_PAID = "paid"
+	STATUS_REFUNDED = "refunded"
+	STATUS_VOID = "void"
+	STATUS_CHOICES = [
+		(STATUS_UNPAID, "Unpaid"),
+		(STATUS_PARTIAL, "Partial"),
+		(STATUS_PAID, "Paid"),
+		(STATUS_REFUNDED, "Refunded"),
+		(STATUS_VOID, "Void"),
+	]
+
+	booking = models.ForeignKey("bookings.Booking", on_delete=models.CASCADE, related_name="payments")
+	method = models.CharField(max_length=20, choices=METHOD_CHOICES)
+	reference = models.CharField(max_length=120, blank=True, default="")
+	amount = models.DecimalField(max_digits=10, decimal_places=2)
+	status = models.CharField(max_length=20, choices=STATUS_CHOICES, default=STATUS_UNPAID)
+	paid_by = models.ForeignKey(
+		"auth.User",
+		on_delete=models.SET_NULL,
+		null=True,
+		blank=True,
+		related_name="processed_payments",
+		limit_choices_to={"is_staff": True},
+	)
+	payment_date = models.DateTimeField(default=timezone.now)
+	created_at = models.DateTimeField(auto_now_add=True)
+	updated_at = models.DateTimeField(auto_now=True)
+
+	class Meta:
+		ordering = ["-created_at"]
+
+	def clean(self) -> None:
+		if self.amount <= 0:
+			raise ValidationError({"amount": "amount must be greater than 0"})
+
+	def __str__(self) -> str:
+		return f"Payment #{self.pk} for Booking #{self.booking_id}"
+
+
+def _sync_booking_payment_flags(booking: Booking) -> None:
+	balance_due = booking.compute_balance_due()
+	is_paid = balance_due <= Decimal("0.00")
+
+	paid_at = booking.paid_at
+	if is_paid and paid_at is None:
+		paid_at = timezone.now()
+	if not is_paid:
+		paid_at = None
+
+	update_fields = []
+	if booking.is_paid != is_paid:
+		booking.is_paid = is_paid
+		update_fields.append("is_paid")
+	if booking.paid_at != paid_at:
+		booking.paid_at = paid_at
+		update_fields.append("paid_at")
+
+	if update_fields:
+		update_fields.append("updated_at")
+		booking.save(update_fields=update_fields)
+
+
 @receiver(post_save, sender=Booking)
 def handle_booking_cancellation(sender, instance, created, **kwargs):
 	"""
@@ -116,3 +250,13 @@ def handle_booking_cancellation(sender, instance, created, **kwargs):
 		# Find and promote any confirmed booking that just got cancelled
 		# by checking if this is now a cancellation
 		instance.promote_from_waitlist()
+
+
+@receiver(post_save, sender=Payment)
+def sync_booking_after_payment_save(sender, instance, created, **kwargs):
+	_sync_booking_payment_flags(instance.booking)
+
+
+@receiver(post_delete, sender=Payment)
+def sync_booking_after_payment_delete(sender, instance, **kwargs):
+	_sync_booking_payment_flags(instance.booking)

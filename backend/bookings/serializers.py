@@ -1,11 +1,15 @@
 from rest_framework import serializers
 from django.core.exceptions import ValidationError as DjangoValidationError
 
-from .models import Booking
+from .models import Booking, Payment
 from courts.serializers import CourtSerializer
 
 
 class BookingSerializer(serializers.ModelSerializer):
+    total_paid_amount = serializers.SerializerMethodField()
+    balance_due = serializers.SerializerMethodField()
+    payment_progress_status = serializers.SerializerMethodField()
+
     class Meta:
         model = Booking
         fields = [
@@ -21,6 +25,9 @@ class BookingSerializer(serializers.ModelSerializer):
             "status",
             "attended",
             "no_show",
+            "total_paid_amount",
+            "balance_due",
+            "payment_progress_status",
             "created_at",
             "updated_at",
         ]
@@ -63,38 +70,92 @@ class BookingSerializer(serializers.ModelSerializer):
 
         return attrs
 
+    def get_total_paid_amount(self, obj):
+        return obj.compute_total_paid_amount()
+
+    def get_balance_due(self, obj):
+        return obj.compute_balance_due()
+
+    def get_payment_progress_status(self, obj):
+        return obj.compute_payment_progress_status()
+
 
 class BookingTimelineSerializer(serializers.ModelSerializer):
-	"""Serializer for member timeline/profile view with nested court info."""
-	court = CourtSerializer(read_only=True)
-	
-	class Meta:
-		model = Booking
-		fields = [
-			"id",
-			"court",
-			"start_time",
-			"end_time",
-			"players_count",
-			"fee_amount",
-			"is_paid",
-			"paid_at",
-			"status",
-			"attended",
-			"no_show",
-			"created_at",
-		]
-		read_only_fields = [
-			"id",
-			"court",
-			"start_time",
-			"end_time",
-			"players_count",
-			"fee_amount",
-			"is_paid",
-			"paid_at",
-			"status",
-			"attended",
-			"no_show",
-			"created_at",
-		]
+    """Serializer for member timeline/profile view with nested court info."""
+    court = CourtSerializer(read_only=True)
+
+    class Meta:
+        model = Booking
+        fields = [
+            "id",
+            "court",
+            "start_time",
+            "end_time",
+            "players_count",
+            "fee_amount",
+            "is_paid",
+            "paid_at",
+            "status",
+            "attended",
+            "no_show",
+            "created_at",
+        ]
+        read_only_fields = [
+            "id",
+            "court",
+            "start_time",
+            "end_time",
+            "players_count",
+            "fee_amount",
+            "is_paid",
+            "paid_at",
+            "status",
+            "attended",
+            "no_show",
+            "created_at",
+        ]
+
+
+class PaymentSerializer(serializers.ModelSerializer):
+    paid_by_username = serializers.CharField(source="paid_by.username", read_only=True)
+
+    class Meta:
+        model = Payment
+        fields = [
+            "id",
+            "booking",
+            "method",
+            "reference",
+            "amount",
+            "status",
+            "paid_by",
+            "paid_by_username",
+            "payment_date",
+            "created_at",
+            "updated_at",
+        ]
+        read_only_fields = ["id", "created_at", "updated_at", "paid_by", "paid_by_username"]
+
+    def validate(self, attrs):
+        data = {
+            "booking": attrs.get("booking", getattr(self.instance, "booking", None)),
+            "method": attrs.get("method", getattr(self.instance, "method", None)),
+            "reference": attrs.get("reference", getattr(self.instance, "reference", "")),
+            "amount": attrs.get("amount", getattr(self.instance, "amount", None)),
+            "status": attrs.get("status", getattr(self.instance, "status", Payment.STATUS_UNPAID)),
+            "payment_date": attrs.get("payment_date", getattr(self.instance, "payment_date", None)),
+            "paid_by": attrs.get("paid_by", getattr(self.instance, "paid_by", None)),
+        }
+
+        candidate = Payment(**data)
+        if self.instance:
+            candidate.pk = self.instance.pk
+
+        try:
+            candidate.clean()
+        except DjangoValidationError as exc:
+            if hasattr(exc, "message_dict"):
+                raise serializers.ValidationError(exc.message_dict)
+            raise serializers.ValidationError(exc.messages)
+
+        return attrs

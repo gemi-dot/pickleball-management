@@ -6,3 +6,4 @@ export { MetricCard } from "./MetricCard";
 export { CourtFormModal } from "./CourtForm";
 export { MemberFormModal } from "./MemberForm";
 export { BookingFormModal } from "./BookingForm";
+export { PaymentFormModal } from "./PaymentForm";

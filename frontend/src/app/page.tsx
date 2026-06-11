@@ -7,6 +7,7 @@ import { MetricCard } from "@/components/MetricCard";
 import { request } from "@/lib/api/http";
 
 type PeriodOption = "7d" | "30d";
+type HeatmapMode = "upcoming" | "past";
 
 type TrendPoint = {
   date: string;
@@ -17,6 +18,7 @@ type TrendPoint = {
 type HeatmapSlot = {
   hour: number;
   count: number;
+  courts: string[];
 };
 
 type HeatmapDay = {
@@ -27,6 +29,7 @@ type HeatmapDay = {
 
 interface BookingHeatmapResponse {
   period: string;
+  mode: HeatmapMode;
   start_date: string;
   end_date: string;
   hours: number[];
@@ -77,28 +80,15 @@ function formatPHP(value: number): string {
   }).format(value || 0);
 }
 
-function formatDelta(value: number | null): string {
-  if (value === null) {
-    return "No prior period";
-  }
-  const sign = value > 0 ? "+" : "";
-  return `${sign}${value}% vs prev period`;
+function formatHour12(hour: number): string {
+  const normalizedHour = ((hour % 24) + 24) % 24;
+  const suffix = normalizedHour >= 12 ? "PM" : "AM";
+  const hour12 = normalizedHour % 12 || 12;
+  return `${hour12}:00 ${suffix}`;
 }
 
-function renderTinyBars(values: number[]): string {
-  if (values.length === 0) {
-    return "";
-  }
-
-  const blocks = ["▁", "▂", "▃", "▄", "▅", "▆", "▇", "█"];
-  const max = Math.max(...values, 1);
-
-  return values
-    .map((value) => {
-      const normalized = Math.round((value / max) * (blocks.length - 1));
-      return blocks[normalized];
-    })
-    .join("");
+function formatHourRange12(hour: number): string {
+  return `${formatHour12(hour)} - ${formatHour12(hour + 1)}`;
 }
 
 export default function Home() {
@@ -108,6 +98,7 @@ export default function Home() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>();
   const [period, setPeriod] = useState<PeriodOption>("7d");
+  const [heatmapMode, setHeatmapMode] = useState<HeatmapMode>("upcoming");
   const [isLive, setIsLive] = useState(true);
   const [lastUpdated, setLastUpdated] = useState<string>("");
 
@@ -136,7 +127,7 @@ export default function Home() {
           }),
           request<BookingHeatmapResponse>("/dashboard/heatmap/", {
             method: "GET",
-            query: { period },
+            query: { period, mode: heatmapMode },
           }),
           request<OperationalAlertsResponse>("/dashboard/alerts/", {
             method: "GET",
@@ -162,7 +153,7 @@ export default function Home() {
         }
       }
     },
-    [period]
+    [period, heatmapMode]
   );
 
   useEffect(() => {
@@ -260,7 +251,7 @@ export default function Home() {
         </div>
       )}
 
-      <div className="grid gap-6 sm:grid-cols-2 lg:grid-cols-5">
+      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-5">
         <Link href="/bookings?scope=today" className="block">
           <MetricCard
             title="Today's Bookings"
@@ -307,67 +298,46 @@ export default function Home() {
         </Link>
       </div>
 
-      <div className="mt-4 grid gap-6 sm:grid-cols-2">
-        <section className="rounded-2xl border border-line bg-card p-6">
+      <div className="mt-3 grid gap-4">
+        <section className="rounded-2xl border border-line bg-card p-5">
           <p className="text-sm font-medium uppercase tracking-wide text-muted">Outstanding</p>
-          <p className="mt-2 text-2xl font-bold text-foreground">
+          <p className="mt-1.5 text-2xl font-bold text-foreground">
             {formatPHP(metrics?.outstanding_amount || 0)}
           </p>
-          <p className="mt-1 text-xs text-muted">unpaid confirmed bookings</p>
-        </section>
-        <section className="rounded-2xl border border-line bg-card p-6">
-          <p className="text-sm font-medium uppercase tracking-wide text-muted">Avg Booking Value</p>
-          <p className="mt-2 text-2xl font-bold text-foreground">
-            {formatPHP(metrics?.average_booking_value || 0)}
-          </p>
-          <p className="mt-1 text-xs text-muted">based on paid bookings (30d)</p>
+          <p className="mt-0.5 text-xs text-muted">unpaid confirmed bookings</p>
         </section>
       </div>
 
-      <div className="mt-6 grid gap-6 lg:grid-cols-2">
-        <section className="rounded-2xl border border-line bg-card p-6">
-          <div className="mb-3 flex items-center justify-between">
-            <h2 className="text-lg font-semibold text-foreground">Bookings Trend</h2>
-            <span className="text-xs text-muted">
-              {formatDelta(metrics?.bookings_delta_pct ?? null)}
-            </span>
-          </div>
-          <p className="text-3xl font-bold text-foreground">
-            {metrics?.period_confirmed_bookings ?? 0}
-          </p>
-          <p className="text-sm text-muted">confirmed in selected range</p>
-          <p className="mt-4 font-mono text-xl text-accent">
-            {renderTinyBars((metrics?.trends.bookings ?? []).map((item) => item.count ?? 0))}
-          </p>
-        </section>
-
-        <section className="rounded-2xl border border-line bg-card p-6">
-          <div className="mb-3 flex items-center justify-between">
-            <h2 className="text-lg font-semibold text-foreground">Utilization Trend</h2>
-            <span className="text-xs text-muted">
-              {formatDelta(metrics?.utilization_delta_pct ?? null)}
-            </span>
-          </div>
-          <p className="text-3xl font-bold text-foreground">
-            {metrics?.utilization_avg_pct ?? 0}%
-          </p>
-          <p className="text-sm text-muted">average court utilization</p>
-          <p className="mt-4 font-mono text-xl text-accent">
-            {renderTinyBars(
-              (metrics?.trends.utilization ?? []).map((item) =>
-                Math.round(item.percentage ?? 0)
-              )
-            )}
-          </p>
-        </section>
-      </div>
-
-      <section className="mt-6 rounded-2xl border border-line bg-card p-6">
-        <div className="mb-4 flex items-center justify-between">
+      <section className="mt-4 rounded-2xl border border-line bg-card p-5">
+        <div className="mb-3 flex items-center justify-between">
           <h2 className="text-lg font-semibold text-foreground">Booking Heatmap</h2>
           <span className="text-xs text-muted">
-            Peak intensity by day/hour ({period})
+            Peak intensity by day/hour ({period}, {heatmapMode})
           </span>
+        </div>
+
+        <div className="mb-2 flex items-center gap-2">
+          <span className="text-xs font-medium text-muted">View:</span>
+          <button
+            onClick={() => setHeatmapMode("upcoming")}
+            className={`rounded-full px-3 py-1 text-xs font-medium transition-colors ${
+              heatmapMode === "upcoming"
+                ? "bg-accent text-white"
+                : "border border-line bg-white text-foreground hover:bg-card-hover"
+            }`}
+          >
+            Upcoming
+          </button>
+          <button
+            onClick={() => setHeatmapMode("past")}
+            className={`rounded-full px-3 py-1 text-xs font-medium transition-colors ${
+              heatmapMode === "past"
+                ? "bg-accent text-white"
+                : "border border-line bg-white text-foreground hover:bg-card-hover"
+            }`}
+          >
+            Past
+          </button>
         </div>
 
         <div className="overflow-x-auto">
@@ -377,7 +347,7 @@ export default function Home() {
                 <th className="px-2 py-2 text-left text-muted">Day</th>
                 {(heatmap?.hours ?? []).map((hour) => (
                   <th key={hour} className="px-1 py-2 text-center text-muted font-medium">
-                    {hour}:00
+                    {formatHour12(hour)}
                   </th>
                 ))}
               </tr>
@@ -392,9 +362,16 @@ export default function Home() {
                     <td key={`${day.date}-${slot.hour}`} className="px-1 py-2 text-center">
                       <div
                         className={`rounded px-2 py-1 ${heatClass(slot.count)}`}
-                        title={`${day.date} ${slot.hour}:00 - ${slot.count} bookings`}
+                        title={`${day.date} ${formatHourRange12(slot.hour)} - ${slot.count} bookings${
+                          slot.courts.length > 0 ? ` | Courts: ${slot.courts.join(", ")}` : ""
+                        }`}
                       >
-                        {slot.count}
+                        <span className="font-semibold">{slot.count}</span>
+                        {slot.courts.length > 0 && (
+                          <p className="mt-1 truncate text-[10px] leading-tight">
+                            {slot.courts.join(", ")}
+                          </p>
+                        )}
                       </div>
                     </td>
                   ))}

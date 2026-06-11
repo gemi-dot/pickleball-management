@@ -30,7 +30,7 @@ export default function RootLayout({
       suppressHydrationWarning
       className={`${bricolage.variable} ${plexMono.variable} h-full antialiased`}
     >
-      <body suppressHydrationWarning className="min-h-full flex flex-col">
+      <body suppressHydrationWarning className="min-h-screen">
         <AppShell>{children}</AppShell>
       </body>
     </html>

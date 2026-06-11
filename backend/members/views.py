@@ -5,7 +5,7 @@ from django.db.models import Q
 
 from .models import Member
 from .serializers import MemberSerializer, MemberDetailSerializer
-from bookings.serializers import BookingTimelineSerializer
+from bookings.serializers import BookingTimelineSerializer, PaymentSerializer
 
 
 class MemberViewSet(viewsets.ModelViewSet):
@@ -51,4 +51,15 @@ class MemberViewSet(viewsets.ModelViewSet):
 		member = self.get_object()
 		bookings = member.bookings.all().order_by("-start_time")
 		serializer = BookingTimelineSerializer(bookings, many=True)
+		return Response(serializer.data)
+
+	@action(detail=True, methods=["get"])
+	def payments(self, request, pk=None):
+		"""Get all payment records for this member across all bookings."""
+		from bookings.models import Payment
+		member = self.get_object()
+		payments = Payment.objects.filter(
+			booking__member=member
+		).select_related("booking", "booking__court").order_by("-payment_date")
+		serializer = PaymentSerializer(payments, many=True)
 		return Response(serializer.data)

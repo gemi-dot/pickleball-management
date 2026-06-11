@@ -6,7 +6,7 @@ from django.utils import timezone
 from rest_framework.decorators import api_view
 from rest_framework.response import Response
 
-from bookings.models import Booking
+from bookings.models import Booking, Payment
 from courts.models import Court
 from members.models import Member
 
@@ -92,6 +92,12 @@ def _parse_heatmap_period_days(request) -> int:
         "30d": 30,
     }
     return supported.get(period, 7)
+
+
+def _parse_heatmap_mode(request) -> str:
+    mode = request.query_params.get("mode", "upcoming")
+    supported = {"upcoming", "past"}
+    return mode if mode in supported else "upcoming"
 
 def calculate_utilization():
     """
@@ -209,23 +215,117 @@ def court_occupancy(request):
     return Response(slots)
 
 
+@api_view(["GET"])
+def revenue_report(request):
+    """Revenue totals broken down by payment method and payment status."""
+    period = request.query_params.get("period", "30d")
+    period_days = {"7d": 7, "30d": 30, "90d": 90}.get(period, 30)
+
+    today = timezone.localdate()
+    period_start = today - timedelta(days=period_days - 1)
+
+    base_qs = Payment.objects.filter(
+        payment_date__date__gte=period_start,
+        payment_date__date__lte=today,
+    )
+
+    # Overall totals
+    paid_statuses = [Payment.STATUS_PAID, Payment.STATUS_PARTIAL]
+    total_revenue = base_qs.filter(status__in=paid_statuses).aggregate(
+        total=Sum("amount")
+    )["total"] or 0
+
+    total_refunded = base_qs.filter(status=Payment.STATUS_REFUNDED).aggregate(
+        total=Sum("amount")
+    )["total"] or 0
+
+    net_revenue = float(total_revenue) - float(total_refunded)
+
+    # By payment method
+    by_method = (
+        base_qs.filter(status__in=paid_statuses)
+        .values("method")
+        .annotate(total=Sum("amount"), count=Count("id"))
+        .order_by("-total")
+    )
+
+    # By payment status
+    by_status = (
+        base_qs
+        .values("status")
+        .annotate(total=Sum("amount"), count=Count("id"))
+        .order_by("-total")
+    )
+
+    # Daily revenue trend
+    total_days = (today - period_start).days + 1
+    daily_rows = (
+        base_qs.filter(status__in=paid_statuses)
+        .annotate(day=TruncDate("payment_date"))
+        .values("day")
+        .annotate(total=Sum("amount"), count=Count("id"))
+        .order_by("day")
+    )
+    daily_by_date = {row["day"]: {"total": float(row["total"]), "count": row["count"]} for row in daily_rows}
+    daily_trend = []
+    for i in range(total_days):
+        day = period_start + timedelta(days=i)
+        entry = daily_by_date.get(day, {"total": 0, "count": 0})
+        daily_trend.append({"date": day.isoformat(), **entry})
+
+    return Response({
+        "period": period,
+        "period_start": period_start.isoformat(),
+        "period_end": today.isoformat(),
+        "total_revenue": float(total_revenue),
+        "total_refunded": float(total_refunded),
+        "net_revenue": round(net_revenue, 2),
+        "total_transactions": base_qs.filter(status__in=paid_statuses).count(),
+        "by_method": [
+            {"method": r["method"], "total": float(r["total"]), "count": r["count"]}
+            for r in by_method
+        ],
+        "by_status": [
+            {"status": r["status"], "total": float(r["total"] or 0), "count": r["count"]}
+            for r in by_status
+        ],
+        "daily_trend": daily_trend,
+    })
+
+
 @api_view(['GET'])
 def booking_heatmap(request):
     """Return booking intensity heatmap for selected period and operating hours."""
     today = timezone.localdate()
     period_days = _parse_heatmap_period_days(request)
-    start_date = today - timedelta(days=period_days - 1)
+    mode = _parse_heatmap_mode(request)
+
+    if mode == "past":
+        start_date = today - timedelta(days=period_days - 1)
+        end_date = today
+    else:
+        start_date = today
+        end_date = today + timedelta(days=period_days - 1)
 
     bookings = Booking.objects.filter(
         status=Booking.STATUS_CONFIRMED,
-        start_time__date__range=(start_date, today),
-    )
+        start_time__date__range=(start_date, end_date),
+    ).select_related("court")
 
-    count_by_day_hour = {}
+    slot_meta_by_day_hour = {}
     for booking in bookings:
         local_start = timezone.localtime(booking.start_time)
         key = (local_start.date().isoformat(), local_start.hour)
-        count_by_day_hour[key] = count_by_day_hour.get(key, 0) + 1
+        slot_meta = slot_meta_by_day_hour.setdefault(
+            key,
+            {
+                "count": 0,
+                "courts": set(),
+            },
+        )
+        slot_meta["count"] += 1
+        if booking.court_id and booking.court and booking.court.name:
+            slot_meta["courts"].add(booking.court.name)
 
     hours = list(range(8, 21))
     days = []
@@ -239,16 +339,19 @@ def booking_heatmap(request):
             "slots": [],
         }
         for hour in hours:
-            count = count_by_day_hour.get((day.isoformat(), hour), 0)
+            slot_meta = slot_meta_by_day_hour.get((day.isoformat(), hour), None)
+            count = slot_meta["count"] if slot_meta else 0
+            courts = sorted(slot_meta["courts"]) if slot_meta else []
             max_count = max(max_count, count)
-            row["slots"].append({"hour": hour, "count": count})
+            row["slots"].append({"hour": hour, "count": count, "courts": courts})
         days.append(row)
 
     return Response(
         {
             "period": f"{period_days}d",
+            "mode": mode,
             "start_date": start_date.isoformat(),
-            "end_date": today.isoformat(),
+            "end_date": end_date.isoformat(),
             "hours": hours,
             "max_count": max_count,
             "days": days,
